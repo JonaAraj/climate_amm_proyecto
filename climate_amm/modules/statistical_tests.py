@@ -264,6 +264,27 @@ class StatisticalEngine:
 
     # ── 5. SIMULACIÓN MONTE CARLO ─────────────────────────────────
 
+    # Pesos calibrados para física meteorológica del AMM (Monterrey, NL)
+    # Suma = 1.0 garantizada. Ajustados para evitar colapso a P=0 o P=1.
+    WEIGHTS = {
+        "humidity": 0.35,   # Humedad: predictor primario de condensación
+        "pressure": 0.35,   # Presión: indicador más fiable de sistema frontal
+        "pm25":     0.18,   # PM2.5: núcleos de condensación (CCN)
+        "wind":     0.12,   # Viento: convergencia de masa de aire (~15 km/h óptimo)
+    }
+    # Escala de ruido: ±0.225 — suficiente para cruzar umbrales en ambas direcciones
+    NOISE_SCALE = 0.45
+
+    @staticmethod
+    def _sigmoid(x: float, k: float = 10.0, x0: float = 0.5) -> float:
+        """
+        Función sigmoide para mapear score → probabilidad continua.
+        k controla la pendiente (mayor k = transición más abrupta).
+        x0 es el punto de inflexión (umbral central).
+        k=10 da una transición suave entre ~0.3 y ~0.7.
+        """
+        return 1.0 / (1.0 + np.exp(-k * (x - x0)))
+
     def monte_carlo(
         self,
         humidity: float,
@@ -273,72 +294,126 @@ class StatisticalEngine:
         gcl_numbers: np.ndarray
     ) -> MonteCarloResult:
         """
-        Simulación Monte Carlo de probabilidad de lluvia.
-        
-        Modelo físico simplificado:
-          - Humedad >70% → factor positivo fuerte
-          - Presión <1009 hPa → factor positivo
-          - PM2.5 >30 µg → núcleos de condensación → factor positivo
-          - Viento entre 10–25 km/h → convergencia → factor positivo
-          
-        Cada simulación perturba las variables con ruido GCL y
-        evalúa si se superan umbrales de precipitación.
+        Simulación Monte Carlo calibrada de probabilidad de lluvia.
+
+        Cambios respecto a v1:
+        ─────────────────────
+        1. Score continuo (sigmoide) en vez de binario con umbral fijo.
+           Elimina el colapso a P=100% cuando base_score > umbral + noise_max.
+
+        2. noise_scale = 0.45 (era 0.15).
+           Perturbación real de ±0.225 que puede cruzar el umbral en ambas
+           direcciones para cualquier valor de base_score en [0.2, 0.8].
+
+        3. Pesos ajustados a física del AMM:
+           humedad 0.35 · presión 0.35 · PM2.5 0.18 · viento 0.12
+
+        4. Normalización de presión con rango AMM real [990, 1025] hPa,
+           no el rango genérico anterior [990, 1030].
+
+        5. Viento: función campana centrada en 15 km/h (convergencia óptima
+           para lluvia convectiva en zona montañosa del AMM).
+
+        Modelo físico
+        ─────────────
+        - Humedad ≥ 70%  → condensación activa
+        - Presión ↓ hPa  → sistema de baja presión entrando
+        - PM2.5 ≥ 30 µg  → aerosoles como CCN aceleran formación de gotas
+        - Viento ~15 km/h → convergencia sin dispersar la nubosidad
         """
         n = len(gcl_numbers)
-        rain_events = np.zeros(n)
-        convergence = np.zeros(n)
+        w = self.WEIGHTS
 
-        # Normalizar variables a [0,1]
-        hum_n  = np.clip(humidity / 100, 0, 1)
-        pres_n = np.clip(1 - (pressure - 990) / 40, 0, 1)  # invertida
-        pm_n   = np.clip(pm25 / 80, 0, 1)
-        wind_n = np.clip(1 - abs(wind_speed - 17) / 20, 0, 1)
+        # ── Normalización de variables con rangos físicos del AMM ──
+        hum_n  = np.clip(humidity / 100.0, 0.0, 1.0)
 
-        # Score base del estado atmosférico
+        # Presión invertida: menor presión = mayor prob. lluvia
+        # Rango AMM: [990, 1025] hPa → mapeo a [1.0, 0.0]
+        pres_n = np.clip(1.0 - (pressure - 990.0) / 35.0, 0.0, 1.0)
+
+        # PM2.5: efecto de nucleación, saturación en ~70 µg/m³
+        pm_n   = np.clip(pm25 / 70.0, 0.0, 1.0)
+
+        # Viento: campana centrada en 15 km/h, cae a 0 en 0 y 40 km/h
+        # Convergencia óptima para convección en AMM entre 10–25 km/h
+        wind_n = np.clip(1.0 - abs(wind_speed - 15.0) / 25.0, 0.0, 1.0)
+
+        # ── Score base atmosférico ─────────────────────────────────
         base_score = (
-            0.40 * hum_n +
-            0.30 * pres_n +
-            0.20 * pm_n +
-            0.10 * wind_n
+            w["humidity"] * hum_n +
+            w["pressure"] * pres_n +
+            w["pm25"]     * pm_n  +
+            w["wind"]     * wind_n
         )
 
-        # Perturbación Monte Carlo con números GCL
-        noise_scale = 0.15
+        # ── Simulaciones Monte Carlo ───────────────────────────────
+        # Cada iteración: perturbar base_score con ruido GCL,
+        # aplicar sigmoide para obtener P(lluvia) continua en [0,1].
+        # Se acumula la media corrida para la curva de convergencia.
+
+        sim_probs  = np.empty(n)
+        convergence = np.empty(n)
+
         for i in range(n):
-            noise = (gcl_numbers[i] - 0.5) * noise_scale
-            score = np.clip(base_score + noise, 0, 1)
-            rain_events[i] = 1 if score > 0.45 else 0
-            convergence[i] = rain_events[:i+1].mean() if i > 0 else rain_events[0]
+            # Ruido centrado en 0, rango real ±NOISE_SCALE/2
+            noise = (gcl_numbers[i] - 0.5) * self.NOISE_SCALE
+            perturbed = float(np.clip(base_score + noise, 0.0, 1.0))
 
-        rain_prob = float(rain_events.mean())
-        std_error = float(np.sqrt(rain_prob * (1 - rain_prob) / n))
+            # Probabilidad continua via sigmoide (k=8, x0=0.50)
+            # k=8 evita tanto la saturación total como valores triviales
+            sim_probs[i] = self._sigmoid(perturbed, k=8.0, x0=0.50)
 
-        # IC 95%
-        z95 = 1.96
-        ci_low  = max(0, rain_prob - z95 * std_error)
-        ci_high = min(1, rain_prob + z95 * std_error)
+            convergence[i] = sim_probs[:i+1].mean()
 
+        # ── Estadísticos finales ───────────────────────────────────
+        rain_prob = float(sim_probs.mean())
+        # Error estándar de la media de una distribución continua
+        std_error = float(sim_probs.std(ddof=1) / np.sqrt(n))
+
+        # IC 95% de Wald sobre la media de probabilidades
+        z95     = 1.96
+        ci_low  = float(np.clip(rain_prob - z95 * std_error, 0.0, 1.0))
+        ci_high = float(np.clip(rain_prob + z95 * std_error, 0.0, 1.0))
+
+        # Criterio de varianza: error estándar < 0.01 (umbral más exigente)
         return MonteCarloResult(
             n_simulations=n,
             rain_probability=round(rain_prob, 4),
             confidence_interval=(round(ci_low, 4), round(ci_high, 4)),
-            std_error=round(std_error, 4),
+            std_error=round(std_error, 6),
             convergence_curve=convergence,
-            passed=(std_error < 0.015)
+            passed=(std_error < 0.010)
         )
 
     # ── 6. DIAGNÓSTICO COMPUESTO ──────────────────────────────────
 
-    def _diagnose(self, rain_prob: float, all_passed: bool) -> tuple[str, float]:
-        """Clasifica el pronóstico y calcula confianza."""
-        base_confidence = 0.90 if all_passed else 0.72
+    def _diagnose(self, rain_prob: float, ci: tuple,
+                  all_passed: bool) -> tuple[str, float]:
+        """
+        Diagnóstico con confianza dinámica basada en el IC del Monte Carlo.
 
-        if rain_prob >= 0.65:
-            return "lluvia_alta", round(base_confidence * (0.85 + 0.15 * rain_prob), 3)
+        Confianza = 1 - ancho_IC_normalizado
+        Un IC angosto indica convergencia del modelo → alta confianza.
+        Las pruebas estadísticas fallidas penalizan adicional (-8%).
+
+        Umbrales de clasificación (ajustados para evitar zona muerta):
+          lluvia_alta    : P ≥ 0.62
+          lluvia_moderada: 0.40 ≤ P < 0.62
+          despejado      : P < 0.40
+        """
+        ci_width = ci[1] - ci[0]                        # ancho IC [0, 0.4 típico]
+        # Confianza base: IC angosto = modelo estable = alta confianza
+        ci_confidence = float(np.clip(1.0 - ci_width * 2.5, 0.50, 0.96))
+        # Penalización si alguna prueba estadística falló
+        stat_penalty = 0.0 if all_passed else 0.08
+        confidence = round(ci_confidence - stat_penalty, 3)
+
+        if rain_prob >= 0.62:
+            return "lluvia_alta", confidence
         elif rain_prob >= 0.40:
-            return "lluvia_moderada", round(base_confidence * 0.80, 3)
+            return "lluvia_moderada", round(confidence * 0.95, 3)
         else:
-            return "despejado", round(base_confidence * (0.9 - rain_prob * 0.3), 3)
+            return "despejado", round(confidence * 0.92, 3)
 
     # ── 7. PUNTO DE ENTRADA PRINCIPAL ─────────────────────────────
 
@@ -389,7 +464,9 @@ class StatisticalEngine:
 
         # 4. Diagnóstico
         all_passed = gcl.passed and ks.passed and series.passed and promedios.passed
-        diagnosis, confidence = self._diagnose(mc.rain_probability, all_passed)
+        diagnosis, confidence = self._diagnose(
+            mc.rain_probability, mc.confidence_interval, all_passed
+        )
 
         return StatTestSuite(
             municipio=municipio,
