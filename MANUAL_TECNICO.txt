@@ -1,0 +1,205 @@
+MANUAL TECNICO
+Sistema de Pronostico Climatico y Calidad del Aire AMM
+Proyecto academico — UANL FIME
+
+---
+
+1. IDENTIFICACION
+
+Nombre: Sistema de Pronostico Climatico AMM
+Ambito: Area Metropolitana de Monterrey, Nuevo Leon, Mexico
+Tipo: Aplicacion web de monitoreo y simulacion
+Framework: Streamlit (Python)
+Repositorio: climate_amm/
+
+---
+
+2. OBJETIVO
+
+Desarrollar una herramienta que integre datos meteorologicos y de contaminacion en tiempo real para:
+- Visualizar condiciones actuales del AMM.
+- Ejecutar pruebas estadisticas (Monte Carlo, GCL, KS, Series, Promedios).
+- Simular la acumulacion de PM2.5 mediante una ecuacion diferencial ordinaria (EDO).
+- Detectar eventos de lluvia y proyectar tendencias termicas posteriores.
+
+---
+
+3. STACK TECNOLOGICO
+
+Lenguaje: Python 3.11
+Librerias principales:
+  - streamlit       : interfaz web
+  - plotly          : graficas interactivas
+  - numpy           : operaciones numericas
+  - scipy           : resolucion de EDOs, pruebas estadisticas
+  - httpx           : peticiones HTTP async
+  - pandas          : manejo de datos tabulares (uso minimo)
+
+---
+
+4. ESTRUCTURA DE ARCHIVOS
+
+climate_amm/
+|-- dashboard.py                      # Punto de entrada. UI en Streamlit.
+|-- requirements.txt                  # Dependencias del proyecto.
+|-- modules/
+|   |-- __init__.py                   # Exporta clases y funciones publicas.
+|   |-- api_client.py                 # Cliente unificado: clima + contaminacion.
+|   |-- tomorrow_client.py            # Cliente para API de Tomorrow.io.
+|   |-- sima_client.py                # Cliente para endpoints JSON de SIMA NL.
+|   |-- pm25_simulator.py             # Solver de EDO y analisis de sensibilidad.
+|   |-- statistical_tests.py          # Motor de pruebas estadisticas.
+|   |-- post_rain_forecast.py         # Detector de eventos de lluvia y tendencias.
+|   |-- charts.py                     # Funciones de visualizacion con Plotly.
+
+---
+
+5. FUENTES DE DATOS
+
+5.1 Clima y pronostico
+Proveedor: Tomorrow.io (API v4)
+Endpoint: https://api.tomorrow.io/v4/weather/forecast
+Autenticacion: API key (proporcionada por el usuario)
+Datos obtenidos:
+  - Temperatura, humedad, presion, punto de rocio.
+  - Velocidad y direccion del viento, rafagas.
+  - Nubosidad, visibilidad, indice UV.
+  - Probabilidad de precipitacion, intensidad de lluvia, codigo de clima.
+  - Pronostico horario (120 h) y diario (15 dias).
+Unidades: metrico (C, km/h, hPa, mm/hr)
+
+5.2 Contaminacion
+Proveedor: Gobierno de Nuevo Leon — SIMA
+Endpoints publicos (JSON, sin autenticacion):
+  - api_indice.php  : contaminantes actuales (PM2.5, PM10, O3, NO2, SO2, CO)
+  - api_meteo.php   : variables meteorologicas de la estacion (temp, hum, viento, lluvia)
+  - api_conc.php    : concentraciones horarias del dia
+Estaciones disponibles:
+  - NORTE2   (default)
+  - NORESTE
+  - NTE2
+Nota: La estacion se selecciona en el sidebar. El mismo dato de contaminacion se aplica a todos los municipios del dashboard porque el SIMA NL no proporciona datos por municipio.
+
+5.3 Fallback
+Si alguna fuente falla, el sistema genera datos simulados con distribuciones realistas para mantener la funcionalidad del dashboard.
+
+---
+
+6. MODELOS Y ALGORITMOS
+
+6.1 Simulacion de PM2.5 (Dinamica de Sistemas)
+Archivo: modules/pm25_simulator.py
+Ecuacion: dM/dt = E(t) - k * V(t) * M(t)
+Variables:
+  M(t)  : concentracion de PM2.5 [µg/m³]
+  E(t)  : tasa de emision [µg/m³·h]
+  k     : coeficiente de friccion/topografia [adimensional]
+  V(t)  : velocidad del viento [m/s]
+Umbral normativo: M* = 35 µg/m³ (NOM-025-SSA1-2014, promedio 24h)
+Solver: scipy.integrate.solve_ivp con metodo RK45 (Runge-Kutta 4-5 adaptativo)
+Paso de evaluacion: dt = 0.05 h (3 min)
+Funciones:
+  - simulate()            : trayectoria basica.
+  - sensitivity_analysis() : variacion del viento en ±10%, ±25%, ±50%.
+  - simulate_with_rain()  : incluye termino de deposicion humeda.
+
+6.2 Motor estadistico
+Archivo: modules/statistical_tests.py
+Componentes:
+  - Generador Congruencial Lineal (GCL): a=1_664_525, c=1_013_904_223, m=2^32.
+  - Prueba de Kolmogorov-Smirnov (KS): uniformidad U(0,1).
+  - Prueba de Series (Runs Test): aleatoriedad de rachas.
+  - Prueba de Promedios: convergencia a media 0.5.
+  - Simulacion Monte Carlo: probabilidad de lluvia con sigmoide y ruido GCL.
+Pesos del modelo Monte Carlo:
+  - humedad    : 0.35
+  - presion    : 0.35
+  - PM2.5      : 0.18 (nucleos de condensacion)
+  - viento     : 0.12
+
+6.3 Pronostico post-lluvia
+Archivo: modules/post_rain_forecast.py
+Entrada: serie horaria de Tomorrow.io (48 h)
+Criterio de deteccion:
+  - probabilidad de precipitacion >= 50%
+  - intensidad de lluvia >= 0.3 mm/h o codigo de clima de lluvia
+Salida:
+  - Temperatura maxima 6 h antes del evento.
+  - Temperatura minima 6 h despues del evento.
+  - Diferencia termica (cambio proyectado).
+
+---
+
+7. DASHBOARD — TABS
+
+Tab 1: Condiciones actuales
+  - KPIs: humedad, temperatura, presion, viento, nubosidad, AQI.
+  - Serie de tiempo simulada de humedad y presion (24 h).
+  - Radar de variables predictoras.
+  - Grafica de contaminantes: modo por defecto "% del limite normativo"; alternativa "valores absolutos" con eje logaritmico.
+  - Pronostico 3 dias.
+  - Pronostico post-lluvia: cards con tendencia termica y grafica de temperatura horaria.
+
+Tab 2: Pruebas estadisticas
+  - Resultados de GCL, KS, Series, Promedios.
+  - Curva de convergencia Monte Carlo.
+  - Panel resumen 4-en-1.
+  - Interpretacion tecnica de resultados.
+
+Tab 3: Comparativa AMM
+  - Heatmap/barra de variable seleccionada entre todos los municipios.
+  - Tabla resumen con diagnostico estadistico por municipio.
+
+Tab 4: Simulacion PM2.5
+  - Parametros ajustables: emision base E(t), coeficiente k, horizonte (h), ciclo diurno.
+  - Grafica de trayectoria con zona de tipping point (M* = 35).
+  - Analisis de sensibilidad parametrica (7 escenarios de viento).
+  - Simulacion con evento de lluvia (deposicion humeda).
+  - Fundamento tecnico de la EDO.
+
+---
+
+8. INSTALACION Y EJECUCION
+
+8.1 Requisitos
+  - Python 3.11 o superior
+  - Conexion a Internet (para consumo de APIs)
+
+8.2 Instalacion de dependencias
+  cd climate_amm
+  pip install -r requirements.txt
+
+8.3 Ejecucion
+  streamlit run dashboard.py
+
+El navegador se abre automaticamente en http://localhost:8501.
+
+---
+
+9. CONFIGURACION
+
+La API key de Tomorrow.io esta hardcodeada en dashboard.py como constante TOMORROW_API_KEY.
+La estacion de monitoreo se selecciona desde el sidebar (NORTE2 por default).
+No se requiere archivo de configuracion adicional.
+
+---
+
+10. LIMITACIONES CONOCIDAS
+
+- Datos de contaminacion: una sola estacion (SIMA) alimenta todos los municipios. No hay desagregacion geografica de contaminantes dentro del AMM.
+- Pronostico post-lluvia: basado exclusivamente en el forecast horario de Tomorrow.io. No incorpora modelos numericos de mesoescala.
+- Simulacion PM2.5: la EDO es un modelo de caja bien mezclada (0D). No resuelve distribucion espacial ni topografia detallada.
+- Fallback a simulacion: si SIMA o Tomorrow.io fallan, los datos se generan con numeros aleatorios. El usuario debe verificar el badge de estado (verde/amarillo/naranja) en el header.
+- Cache: los datos se almacenan en memoria durante 10 minutos. Para forzar actualizacion, usar el boton "Actualizar datos".
+
+---
+
+11. NOTAS DE MANTENIMIENTO
+
+- Si Tomorrow.io cambia su schema de respuesta, actualizar tomorrow_client._parse_interval().
+- Si SIMA NL modifica sus endpoints o parametros, revisar sima_client.INDICE_PARAMS y METEO_PARAMS.
+- El solver RK45 depende de scipy.integrate.solve_ivp. Cambios de version en SciPy pueden afectar la tolerancia adaptativa.
+
+---
+
+Fin del manual.

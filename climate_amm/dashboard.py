@@ -10,18 +10,25 @@ Estructura de la app:
   ├── Sidebar: selección de municipio + parámetros del modelo
   ├── Tab 1: Condiciones actuales (KPIs + gráficas climáticas)
   ├── Tab 2: Pruebas estadísticas (GCL, KS, Series, Promedios, MC)
-  └── Tab 3: Comparativa AMM (todos los municipios)
+  ├── Tab 3: Comparativa AMM (todos los municipios)
+  └── Tab 4: Simulación PM2.5 (Dinámica de Sistemas — EDO RK45)
 """
 
 import streamlit as st
 import time
 import numpy as np
+from datetime import datetime
+
+# Constantes
+TOMORROW_API_KEY = "6s4lVHGfNTpX1PRXaXQ6NQMlVa9LGvvs"
 
 # Importar módulos del proyecto
 from modules import (
     WeatherClient,
     MUNICIPIOS_AMM,
     StatisticalEngine,
+    PM25Simulator,
+    PostRainAnalyzer,
     chart_convergencia_mc,
     chart_ks_distribution,
     chart_series_runs,
@@ -31,6 +38,9 @@ from modules import (
     chart_radar,
     chart_amm_heatmap,
     chart_tests_summary,
+    chart_pm25_trajectory,
+    chart_pm25_sensitivity,
+    chart_post_rain,
 )
 
 # ─────────────────────────────────────────────
@@ -61,9 +71,12 @@ st.markdown("""
 # ─────────────────────────────────────────────
 
 @st.cache_data(ttl=600, show_spinner="Obteniendo datos climáticos…")
-def load_all_data(api_key: str) -> dict:
+def load_all_data(tomorrow_key: str, sima_estacion: str) -> dict:
     """Carga datos de todos los municipios. Caché 10 min."""
-    client = WeatherClient(api_key=api_key if api_key else None)
+    client = WeatherClient(
+        tomorrow_key=tomorrow_key if tomorrow_key else None,
+        sima_estacion=sima_estacion,
+    )
     return client.get_all_municipios()
 
 
@@ -93,18 +106,15 @@ with st.sidebar:
     st.markdown("### ⛈ Pronóstico Climático AMM")
     st.markdown("---")
 
-    # API Key
-    with st.expander("🔑 API Key (OpenWeather)", expanded=False):
-        api_key = st.text_input(
-            "API Key",
-            type="password",
-            placeholder="Pegar aquí tu key…",
-            help="Sin key, el sistema usa datos simulados realistas."
-        )
-        if api_key:
-            st.success("Key configurada ✓")
-        else:
-            st.info("Modo demo — datos simulados")
+    # Estación de referencia
+    st.markdown("**Estación**")
+    sima_estacion = st.selectbox(
+        "Estación de referencia",
+        options=["NORTE2", "NORESTE", "NTE2"],
+        index=0,
+        label_visibility="collapsed",
+        help="Estación de monitoreo ambiental que alimenta los datos de contaminación."
+    )
 
     st.markdown("---")
 
@@ -152,7 +162,7 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 
 with st.spinner("Cargando datos…"):
-    all_data = load_all_data(api_key if api_key else "")
+    all_data = load_all_data(TOMORROW_API_KEY, sima_estacion)
 
 data = all_data[municipio_sel]
 
@@ -162,9 +172,14 @@ data = all_data[municipio_sel]
 
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
-    src_badge = "🟢 API en vivo" if data.source == "openweather" else "🟡 Datos simulados"
+    if "tomorrow" in data.source:
+        src_badge = "🟢 Datos en vivo"
+    elif data.source == "simulado":
+        src_badge = "🟡 Simulado"
+    else:
+        src_badge = "🟠 Mixto"
     st.markdown(f"## {municipio_sel}  &nbsp; `{src_badge}`")
-    st.caption(f"Zona Metropolitana de Monterrey · NL · México")
+    st.caption(f"Zona Metropolitana de Monterrey · NL · México  ·  Estación: {data.sima_estacion}")
 with col_h2:
     diagnosis_text = {
         "lluvia_alta":     "⛈ Lluvia alta",
@@ -176,10 +191,11 @@ with col_h2:
 #  TABS PRINCIPALES
 # ─────────────────────────────────────────────
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🌡 Condiciones actuales",
     "📊 Pruebas estadísticas",
-    "🗺 Comparativa AMM"
+    "🗺 Comparativa AMM",
+    "🔬 Simulación PM2.5",
 ])
 
 
@@ -221,9 +237,24 @@ with tab1:
         )
 
     # Contaminantes
+    st.markdown("---")
+    st.markdown("#### 🏭 Calidad del aire")
+
+    col_pol1, col_pol2 = st.columns([1, 3])
+    with col_pol1:
+        show_abs = st.toggle("Ver valores absolutos", value=False,
+                             help="Por defecto muestra % del límite normativo (OMS/NOM-025). "
+                                  "Activa esto para ver las concentraciones reales en escala logarítmica.")
+    with col_pol2:
+        if data.source == "simulado":
+            st.caption("⚠️ Datos simulados — sin conexión a fuentes reales")
+        else:
+            st.caption(f"🟢 Datos reales — estación: {data.sima_estacion}  |  hora: {data.sima_hora}")
+
     st.plotly_chart(
         chart_pollutants(data.pm25, data.pm10, data.no2,
-                         data.co, data.o3, data.so2, municipio_sel),
+                         data.co, data.o3, data.so2, municipio_sel,
+                         mode="abs" if show_abs else "pct"),
         use_container_width=True
     )
 
@@ -242,6 +273,49 @@ with tab1:
                 f"↑{day['temp_max']:.1f}° ↓{day['temp_min']:.1f}°"
             )
             col.caption(day["description"].capitalize())
+
+    # ── Pronóstico post-lluvia ───────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 🌧 Pronóstico post-lluvia")
+
+    rain_analyzer = PostRainAnalyzer()
+    post_rain = rain_analyzer.analyze(data.hourly_forecast, municipio=municipio_sel)
+
+    if post_rain.has_rain:
+        # Card principal
+        c1, c2, c3 = st.columns([1, 1, 2])
+        with c1:
+            st.metric(
+                f"{post_rain.icon} Tendencia térmica",
+                f"{post_rain.temp_change:+.1f}°C",
+                f"Confianza: {post_rain.confidence}"
+            )
+        with c2:
+            st.metric(
+                "🌡️ Post-evento",
+                f"{post_rain.temp_after:.1f}°C",
+                f"vs {post_rain.temp_before:.1f}°C antes"
+            )
+        with c3:
+            st.info(post_rain.event_desc)
+
+        # Gráfica de temperatura con evento marcado
+        from modules.tomorrow_client import TomorrowClient
+        tc = TomorrowClient("", timeout=5)
+        events = tc.detect_rain_events(data.hourly_forecast)
+        if events:
+            st.plotly_chart(
+                chart_post_rain(data.hourly_forecast, events[0], municipio=municipio_sel),
+                use_container_width=True
+            )
+
+        # Tabla de eventos detectados
+        cards = rain_analyzer.summary_cards(data.hourly_forecast)
+        if cards:
+            with st.expander("📋 Todos los eventos de lluvia detectados (48h)", expanded=False):
+                st.dataframe(cards, use_container_width=True, hide_index=True)
+    else:
+        st.success("☀️ No se detectan eventos de lluvia significativos en las próximas 48 horas.")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -447,3 +521,176 @@ with tab3:
             "MC error": f"{s.monte_carlo.std_error:.4f}",
         })
     st.dataframe(diag_rows, use_container_width=True, hide_index=True)
+
+
+# ════════════════════════════════════════════════════════════════
+#  TAB 4 — SIMULACIÓN PM2.5 (DINÁMICA DE SISTEMAS)
+# ════════════════════════════════════════════════════════════════
+
+with tab4:
+
+    st.markdown("### 🔬 Simulación dinámica de acumulación de PM2.5")
+    st.caption(
+        "Modelo de Dinámica de Sistemas (Forrester):  **dM/dt = E(t) – k · V(t) · M(t)**  —  "
+        "Resuelto con Runge-Kutta 4-5 adaptativo (SciPy)"
+    )
+
+    # ── Parámetros del modelo ────────────────────────────────────
+    st.markdown("**Parámetros del modelo**")
+    cp1, cp2, cp3, cp4 = st.columns(4)
+    with cp1:
+        E_base = st.slider(
+            "Emisión base E(t)", 0.0, 80.0,
+            value=PM25Simulator.equilibrium_emission(
+                M=data.pm25, wind_speed_kmh=data.wind_speed, k=0.12
+            ),
+            step=0.5,
+            help="Tasa de emisión antropogénica base [µg/m³·h]. "
+                 "El valor por defecto es el de equilibrio estacionario para las condiciones actuales."
+        )
+    with cp2:
+        k_factor = st.slider(
+            "Coef. fricción k", 0.01, 0.50, 0.12, 0.01,
+            help="Coeficiente de fricción atmosférica + efecto barrera de la Sierra Madre Oriental. "
+                 "Valores altos = dispersión más eficiente."
+        )
+    with cp3:
+        horizon = st.slider(
+            "Horizonte (h)", 1.0, 12.0, 4.0, 0.5,
+            help="Horizonte de proyección en horas."
+        )
+    with cp4:
+        use_diurnal = st.checkbox(
+            "Ciclo diurno E(t)", value=True,
+            help="Aplica picos de emisión matutino (~8 h) y vespertino (~19 h)."
+        )
+
+    # Instanciar simulador
+    sim = PM25Simulator(
+        k=k_factor,
+        current_hour=datetime.now().hour,
+        use_diurnal_cycle=use_diurnal,
+    )
+
+    # ── Simulación principal ─────────────────────────────────────
+    result = sim.simulate(
+        M0=data.pm25,
+        wind_speed_kmh=data.wind_speed,
+        E_base=E_base,
+        horizon=horizon,
+    )
+
+    # ── KPIs ─────────────────────────────────────────────────────
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric("🏭 Emisión E(t)", f"{E_base:.1f}", "µg/m³·h")
+    kpi2.metric("🌬️ Viento actual", f"{data.wind_speed:.1f}", "km/h")
+    kpi3.metric("📈 M final (proj.)", f"{result.final_M:.1f}", "µg/m³")
+
+    tip_label = sim.format_tipping_time(result.tipping_time)
+    if result.safe:
+        kpi4.metric("✅ Tipping Point", tip_label, "Sin riesgo")
+    else:
+        kpi4.metric("⚠️ Tipping Point", tip_label, "Contingencia proyectada", delta_color="inverse")
+
+    # ── Gráfica principal ────────────────────────────────────────
+    st.plotly_chart(
+        chart_pm25_trajectory(result, M_star=sim.M_star, municipio=municipio_sel),
+        use_container_width=True
+    )
+
+    # ── Análisis de sensibilidad ─────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### 📊 Análisis de sensibilidad paramétrica — variación del viento")
+    st.caption(
+        "Simulaciones con variaciones de ±10%, ±25% y ±50% en la velocidad del viento. "
+        "Objetivo: cuantificar el impacto no lineal de la dispersión atmosférica sobre PM2.5."
+    )
+
+    sens = sim.sensitivity_analysis(
+        M0=data.pm25,
+        wind_speed_kmh=data.wind_speed,
+        E_base=E_base,
+        horizon=horizon,
+    )
+
+    st.plotly_chart(
+        chart_pm25_sensitivity(sens, M_star=sim.M_star, municipio=municipio_sel),
+        use_container_width=True
+    )
+
+    # Tabla resumen de sensibilidad
+    sens_rows = []
+    for sim_i, label, tip in zip(sens.simulations, sens.labels, sens.tipping_times):
+        sens_rows.append({
+            "Escenario": f"Viento {label}",
+            "Viento (km/h)": f"{sim_i.wind_speed:.1f}",
+            "M max (µg/m³)": f"{sim_i.max_M:.1f}",
+            "M final (µg/m³)": f"{sim_i.final_M:.1f}",
+            "Tipping Point": sim.format_tipping_time(tip),
+            "Estado": "🟢 Seguro" if sim_i.safe else "🔴 Riesgo",
+        })
+    st.dataframe(sens_rows, use_container_width=True, hide_index=True)
+
+    # ── Simulación con lluvia (opcional) ─────────────────────────
+    st.markdown("---")
+    with st.expander("🌧 Simular escenario con evento de lluvia (deposición húmeda)", expanded=False):
+        rl1, rl2, rl3 = st.columns(3)
+        with rl1:
+            rain_start = st.slider("Inicio lluvia (h)", 0.0, horizon - 0.5, 1.0, 0.5)
+        with rl2:
+            rain_dur = st.slider("Duración (h)", 0.5, 3.0, 1.5, 0.5)
+        with rl3:
+            rain_int = st.slider("Intensidad deposición", 0.1, 2.0, 0.8, 0.1,
+                                 help="Factor λ de lavado atmosférico (λ·k)")
+
+        result_rain = sim.simulate_with_rain(
+            M0=data.pm25,
+            wind_speed_kmh=data.wind_speed,
+            E_base=E_base,
+            rain_start_h=rain_start,
+            rain_duration_h=rain_dur,
+            rain_intensity=rain_int,
+            horizon=horizon,
+        )
+        st.plotly_chart(
+            chart_pm25_trajectory(
+                result_rain, M_star=sim.M_star, municipio=municipio_sel,
+                show_rain=True, rain_start=rain_start, rain_duration=rain_dur
+            ),
+            use_container_width=True
+        )
+        delta = result.final_M - result_rain.final_M
+        st.info(
+            f"**Efecto de la lluvia:** La concentración final proyectada pasa de "
+            f"**{result.final_M:.1f}** a **{result_rain.final_M:.1f} µg/m³** "
+            f"(reducción de **{delta:.1f} µg/m³** por deposición húmeda)."
+        )
+
+    # ── Fundamento técnico ───────────────────────────────────────
+    st.markdown("---")
+    with st.expander("📖 Fundamento técnico del modelo de Dinámica de Sistemas", expanded=False):
+        st.markdown(f"""
+**Ecuación rectora**
+> dM/dt = E(t) – k · V(t) · M(t)
+
+**Variables y unidades**
+| Símbolo | Descripción | Valor / Fuente |
+|---|---|---|
+| M(t) | Stock de PM2.5 en la cuenca | µg/m³ — condición inicial del sensor/API |
+| E(t) | Tasa de emisión antropogénica | µg/m³·h — parámetro ajustable por usuario |
+| k | Coef. de fricción atmosférica + topografía | {k_factor:.2f} — calibrado para barrera de la Sierra Madre |
+| V(t) | Velocidad del viento | {data.wind_speed:.1f} km/h = {data.wind_speed/3.6:.2f} m/s (dato actual) |
+| M* | Umbral normativo NOM-025-SSA1-2014 | 35 µg/m³ (promedio 24 h) |
+
+**Interpretación física**
+- El término de entrada **E(t)** modela emisiones industriales y vehiculares.
+- El término de salida **k·V(t)·M(t)** representa la dispersión atmosférica, proporcional tanto al viento como a la concentración acumulada.
+- Cuando V → 0 (estancamiento), la salida se anula y PM2.5 crece de forma no lineal.
+- El **Tipping Point** es el instante donde M(t) cruza M* = 35 µg/m³, indicando el inicio de una contingencia ambiental.
+
+**Método numérico**
+- Solver: `scipy.integrate.solve_ivp` con método **RK45** (Runge-Kutta de orden 4-5 adaptativo).
+- Control de error: tolerancias relativas/absolutas automáticas de SciPy.
+- Paso de evaluación: dt = 0.05 h (3 min) para curva suave.
+        """)
+
