@@ -1,12 +1,15 @@
 """
 api_client.py
 =============
-Cliente optimizado para OpenWeather One Call 3.0 y Air Pollution API.
-Soporta consultas individuales y batch para todos los municipios del AMM.
+Cliente unificado: Tomorrow.io (clima) + SIMA NL (contaminación real).
+
+Mantiene compatibilidad total con el dashboard existente.
+WeatherData sigue siendo la estructura central; se agregan campos
+opcionales para funcionalidades nuevas (post-lluvia, código de clima).
 
 Uso:
-    from modules.api_client import WeatherClient
-    client = WeatherClient(api_key="TU_KEY")
+    from modules.api_client import WeatherClient, MUNICIPIOS_AMM
+    client = WeatherClient(tomorrow_key="KEY")
     data = client.get_municipio("General Escobedo")
     all_data = client.get_all_municipios()
 """
@@ -17,6 +20,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 import numpy as np
+
+from .tomorrow_client import TomorrowClient, TomorrowForecast
+from .sima_client import SIMAClient
 
 
 # ─────────────────────────────────────────────
@@ -51,37 +57,45 @@ class WeatherData:
     lon: float
     categoria: str
     # Variables climáticas principales
-    temperature: float       # °C
-    feels_like: float        # °C
-    humidity: float          # %
-    pressure: float          # hPa
-    wind_speed: float        # km/h (convertido de m/s)
-    wind_deg: float          # grados
-    cloud_cover: float       # %
-    visibility: float        # km
-    uvi: float               # índice UV
-    dew_point: float         # punto de rocío °C
+    temperature: float
+    feels_like: float
+    humidity: float
+    pressure: float
+    wind_speed: float
+    wind_deg: float
+    cloud_cover: float
+    visibility: float
+    uvi: float
+    dew_point: float
+    # Nuevos — Tomorrow.io
+    weather_code: int = 0
+    rain_intensity: float = 0.0      # mm/h actual
+    wind_gust: float = 0.0           # km/h
+    precipitation_prob: float = 0.0  # %
     # Pronóstico
-    rain_1h: float           # mm última hora
-    rain_prob_24h: float     # probabilidad próximas 24h [0,1]
-    forecast_3d: list        # [{day, temp_max, temp_min, rain_prob, description}]
-    # Contaminantes (Air Pollution API)
-    aqi: int                 # 1=Bueno … 5=Muy malo
-    pm25: float              # µg/m³
-    pm10: float              # µg/m³
-    no2: float               # µg/m³
-    co: float                # µg/m³
-    o3: float                # µg/m³
-    so2: float               # µg/m³
+    rain_1h: float = 0.0
+    rain_prob_24h: float = 0.0
+    forecast_3d: list = field(default_factory=list)
+    hourly_forecast: list = field(default_factory=list)  # objetos TomorrowForecast
+    # Contaminantes
+    aqi: int = 1
+    pm25: float = 0.0
+    pm10: float = 0.0
+    no2: float = 0.0
+    co: float = 0.0
+    o3: float = 0.0
+    so2: float = 0.0
     # Metadatos
     timestamp: float = field(default_factory=time.time)
-    source: str = "openweather"
+    source: str = "tomorrow+sima"
+    sima_estacion: str = "NORTE2"
+    sima_hora: str = ""
 
 
 @dataclass
 class CacheEntry:
     data: WeatherData
-    expires_at: float        # timestamp de expiración
+    expires_at: float
 
 
 # ─────────────────────────────────────────────
@@ -90,30 +104,31 @@ class CacheEntry:
 
 class WeatherClient:
     """
-    Cliente optimizado con:
-    - Caché TTL configurable (evita peticiones duplicadas)
-    - Consultas async en paralelo para batch de municipios
-    - Fallback a datos simulados si no hay API key
-    - Conversión automática de unidades
+    Cliente unificado:
+      • Tomorrow.io → clima, pronóstico, códigos de clima
+      • SIMA NL     → contaminación real (PM2.5, PM10, etc.)
+      • Fallback    → simulación si falla alguna fuente
     """
-
-    BASE_WEATHER = "https://api.openweathermap.org/data/3.0/onecall"
-    BASE_AIR     = "https://api.openweathermap.org/data/2.5/air_pollution"
-    BASE_METEO   = "https://api.open-meteo.com/v1/forecast"  # fallback gratuito
-
-    AQI_LABELS = {1: "Bueno", 2: "Aceptable", 3: "Moderado", 4: "Malo", 5: "Muy malo"}
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
-        cache_ttl: int = 600,        # segundos (10 min = frecuencia recomendada OW)
-        timeout: int = 10
+        tomorrow_key: Optional[str] = None,
+        sima_estacion: str = "NORTE2",
+        cache_ttl: int = 600,
+        timeout: int = 15,
     ):
-        self.api_key   = api_key
+        self.tomorrow_key = tomorrow_key
+        self.sima_estacion = sima_estacion
         self.cache_ttl = cache_ttl
-        self.timeout   = timeout
+        self.timeout = timeout
         self._cache: dict[str, CacheEntry] = {}
-        self._use_real_api = bool(api_key)
+        self._use_real = bool(tomorrow_key)
+
+        self._tomorrow: Optional[TomorrowClient] = None
+        self._sima: Optional[SIMAClient] = None
+        if self._use_real:
+            self._tomorrow = TomorrowClient(api_key=tomorrow_key, timeout=timeout)
+            self._sima = SIMAClient(estacion=sima_estacion, timeout=timeout)
 
     # ── CACHÉ ─────────────────────────────────────────────────────
 
@@ -124,124 +139,98 @@ class WeatherClient:
         return None
 
     def _cache_set(self, key: str, data: WeatherData):
-        self._cache[key] = CacheEntry(
-            data=data,
-            expires_at=time.time() + self.cache_ttl
-        )
+        self._cache[key] = CacheEntry(data=data, expires_at=time.time() + self.cache_ttl)
 
-    def cache_status(self) -> dict:
-        now = time.time()
-        return {
-            k: f"expira en {int(v.expires_at - now)}s"
-            for k, v in self._cache.items()
-            if v.expires_at > now
-        }
+    # ── FETCH REAL ────────────────────────────────────────────────
 
-    # ── CONSULTA INDIVIDUAL (ASYNC) ───────────────────────────────
+    async def _fetch_real(self, municipio: str, lat: float, lon: float, cat: str) -> WeatherData:
+        """Combina Tomorrow.io + SIMA NL en un solo WeatherData."""
+        # Ejecutar en paralelo: clima + contaminación
+        t_task = asyncio.create_task(asyncio.to_thread(
+            self._tomorrow.get_municipio, municipio, lat, lon
+        ))
+        s_task = asyncio.create_task(asyncio.to_thread(
+            self._sima.fetch
+        ))
 
-    async def _fetch_weather_async(
-        self, client: httpx.AsyncClient, municipio: str
-    ) -> WeatherData:
-        """Fetch async de clima + contaminantes para un municipio."""
-        cached = self._cache_get(municipio)
-        if cached:
-            return cached
+        t_data, s_data = await asyncio.gather(t_task, s_task, return_exceptions=True)
 
-        meta = MUNICIPIOS_AMM[municipio]
-        lat, lon = meta["lat"], meta["lon"]
+        if isinstance(t_data, Exception):
+            raise t_data
+        if isinstance(s_data, Exception):
+            s_data = None  # SIMA puede fallar, usamos fallback de contaminantes
 
-        if self._use_real_api:
-            data = await self._fetch_real(client, municipio, lat, lon, meta["cat"])
-        else:
-            data = self._simulate(municipio, lat, lon, meta["cat"])
-
-        self._cache_set(municipio, data)
-        return data
-
-    async def _fetch_real(
-        self, client, municipio, lat, lon, cat
-    ) -> WeatherData:
-        """Peticiones reales a OpenWeather (paralelas con asyncio.gather)."""
-        params_weather = {
-            "lat": lat, "lon": lon,
-            "exclude": "minutely,alerts",
-            "units": "metric",
-            "appid": self.api_key
-        }
-        params_air = {
-            "lat": lat, "lon": lon,
-            "appid": self.api_key
-        }
-
-        # Ambas peticiones en paralelo
-        weather_resp, air_resp = await asyncio.gather(
-            client.get(self.BASE_WEATHER, params=params_weather),
-            client.get(self.BASE_AIR,     params=params_air)
-        )
-
-        w = weather_resp.json()
-        a = air_resp.json()
-
-        current    = w.get("current", {})
-        hourly     = w.get("hourly", [{}])
-        daily      = w.get("daily", [])
-        components = a.get("list", [{}])[0].get("components", {})
-        aqi_val    = a.get("list", [{}])[0].get("main", {}).get("aqi", 1)
-
-        # Pronóstico 3 días
+        # Construir forecast_3d a partir de daily de Tomorrow
         forecast_3d = []
-        for day in daily[:3]:
+        for day in t_data.daily[:3]:
             forecast_3d.append({
-                "day": day.get("dt", 0),
-                "temp_max": day.get("temp", {}).get("max", 0),
-                "temp_min": day.get("temp", {}).get("min", 0),
-                "rain_prob": day.get("pop", 0),
-                "description": day.get("weather", [{}])[0].get("description", ""),
+                "day": day.time_iso,
+                "temp_max": day.temp,
+                "temp_min": day.feels_like,  # Tomorrow daily trae min/max en temp/feels_like
+                "rain_prob": day.precipitation_prob / 100.0,
+                "description": self._weather_desc(day.weather_code),
             })
 
-        rain_prob_24h = float(np.mean([h.get("pop", 0) for h in hourly[:24]]))
+        # Probabilidad lluvia 24h = media de las primeras 24h horarias
+        rain_prob_24h = float(np.mean([
+            h.precipitation_prob / 100.0 for h in t_data.hourly[:24]
+        ])) if t_data.hourly else 0.0
+
+        # Contaminantes: SIMA tiene prioridad; si falla, usamos simulación
+        pm25 = s_data.pm25 if s_data and s_data.pm25 is not None else self._sim_pm25(cat)
+        pm10 = s_data.pm10 if s_data and s_data.pm10 is not None else self._sim_pm10(cat)
+        no2  = s_data.no2  if s_data and s_data.no2  is not None else self._sim_no2(cat)
+        so2  = s_data.so2  if s_data and s_data.so2  is not None else self._sim_so2(cat)
+        co   = s_data.co   if s_data and s_data.co   is not None else self._sim_co(cat)
+        o3   = s_data.o3   if s_data and s_data.o3   is not None else self._sim_o3()
+
+        # AQI aproximado a partir de PM2.5
+        aqi = self._aqi_from_pm25(pm25)
 
         return WeatherData(
             municipio=municipio, lat=lat, lon=lon, categoria=cat,
-            temperature=current.get("temp", 0),
-            feels_like=current.get("feels_like", 0),
-            humidity=current.get("humidity", 0),
-            pressure=current.get("pressure", 1013),
-            wind_speed=round(current.get("wind_speed", 0) * 3.6, 1),  # m/s → km/h
-            wind_deg=current.get("wind_deg", 0),
-            cloud_cover=current.get("clouds", 0),
-            visibility=round(current.get("visibility", 10000) / 1000, 1),
-            uvi=current.get("uvi", 0),
-            dew_point=current.get("dew_point", 0),
-            rain_1h=current.get("rain", {}).get("1h", 0.0),
+            temperature=t_data.temperature,
+            feels_like=t_data.feels_like,
+            humidity=t_data.humidity,
+            pressure=t_data.pressure,
+            wind_speed=t_data.wind_speed,
+            wind_deg=t_data.wind_deg,
+            cloud_cover=t_data.cloud_cover,
+            visibility=t_data.visibility,
+            uvi=t_data.uvi,
+            dew_point=t_data.dew_point,
+            weather_code=t_data.weather_code,
+            rain_intensity=t_data.rain_intensity,
+            wind_gust=t_data.wind_gust,
+            precipitation_prob=t_data.precipitation_prob,
+            rain_1h=t_data.rain_intensity,
             rain_prob_24h=rain_prob_24h,
             forecast_3d=forecast_3d,
-            aqi=aqi_val,
-            pm25=components.get("pm2_5", 0),
-            pm10=components.get("pm10", 0),
-            no2=components.get("no2", 0),
-            co=components.get("co", 0),
-            o3=components.get("o3", 0),
-            so2=components.get("so2", 0),
-            source="openweather"
+            hourly_forecast=t_data.hourly,
+            aqi=aqi,
+            pm25=pm25,
+            pm10=pm10,
+            no2=no2,
+            co=co,
+            o3=o3,
+            so2=so2,
+            source="tomorrow+sima" if s_data else "tomorrow+simulado",
+            sima_estacion=self.sima_estacion,
+            sima_hora=s_data.hora_reporte if s_data else "",
         )
 
-    # ── DATOS SIMULADOS (sin API key) ─────────────────────────────
+    # ── SIMULACIÓN (fallback) ─────────────────────────────────────
 
     def _simulate(self, municipio: str, lat: float, lon: float, cat: str) -> WeatherData:
-        """
-        Genera datos realistas simulados para desarrollo/demo.
-        Reproducible: misma semilla = mismos datos para el mismo municipio.
-        """
         rng = np.random.default_rng(seed=abs(hash(municipio)) % (2**31))
         industrial = cat == "industrial"
 
-        hum       = float(rng.integers(55, 82))
-        pres      = float(rng.integers(1003, 1018))
-        wind      = round(float(rng.uniform(8, 28)), 1)
-        temp      = round(float(rng.uniform(22, 36)), 1)
-        pm25      = round(float(rng.uniform(28, 68) if industrial else rng.uniform(10, 35)), 1)
-        pm10      = round(float(rng.uniform(50, 95) if industrial else rng.uniform(20, 50)), 1)
+        temp = round(float(rng.uniform(22, 36)), 1)
+        hum  = float(rng.integers(55, 82))
+        pres = float(rng.integers(1003, 1018))
+        wind = round(float(rng.uniform(8, 28)), 1)
+        pm25 = round(float(rng.uniform(28, 68) if industrial else rng.uniform(10, 35)), 1)
+        pm10 = round(float(rng.uniform(50, 95) if industrial else rng.uniform(20, 50)), 1)
         rain_prob = round(float(rng.uniform(0.25, 0.85)), 2)
 
         forecast_3d = [
@@ -267,6 +256,10 @@ class WeatherClient:
             visibility=round(float(rng.uniform(4, 10)), 1),
             uvi=round(float(rng.uniform(3, 10)), 1),
             dew_point=round(float(rng.uniform(12, 22)), 1),
+            weather_code=int(rng.choice([1000, 1001, 4000, 4200])),
+            rain_intensity=round(float(rng.uniform(0, 2.5) if rain_prob > 0.5 else 0), 1),
+            wind_gust=round(wind + rng.uniform(2, 10), 1),
+            precipitation_prob=round(rain_prob * 100, 1),
             rain_1h=round(float(rng.uniform(0, 2.5) if rain_prob > 0.5 else 0), 1),
             rain_prob_24h=rain_prob,
             forecast_3d=forecast_3d,
@@ -277,16 +270,78 @@ class WeatherClient:
             co=round(float(rng.uniform(400, 900) if industrial else rng.uniform(200, 500)), 1),
             o3=round(float(rng.uniform(40, 90)), 1),
             so2=round(float(rng.uniform(5, 30) if industrial else rng.uniform(1, 8)), 1),
-            source="simulado"
+            source="simulado",
         )
 
-    # ── API PÚBLICA ────────────────────────────────────────────────
+    # ── UTILIDADES DE CALIBRACIÓN ─────────────────────────────────
+
+    @staticmethod
+    def _weather_desc(code: int) -> str:
+        desc = {
+            1000: "despejado", 1001: "nublado", 1100: "parcialmente nublado",
+            4000: "lluvia ligera", 4001: "lluvia", 4200: "lluvia ligera",
+            4201: "lluvia fuerte", 4202: "lluvia moderada", 8001: "tormenta",
+        }
+        return desc.get(code, "nublado")
+
+    @staticmethod
+    def _aqi_from_pm25(pm25: float) -> int:
+        if pm25 <= 12:   return 1
+        if pm25 <= 35:   return 2
+        if pm25 <= 55:   return 3
+        if pm25 <= 150:  return 4
+        return 5
+
+    def _sim_pm25(self, cat: str) -> float:
+        rng = np.random.default_rng(seed=abs(hash(cat)) % (2**31))
+        return round(float(rng.uniform(28, 68) if cat == "industrial" else rng.uniform(10, 35)), 1)
+
+    def _sim_pm10(self, cat: str) -> float:
+        rng = np.random.default_rng(seed=abs(hash(cat)) % (2**31))
+        return round(float(rng.uniform(50, 95) if cat == "industrial" else rng.uniform(20, 50)), 1)
+
+    def _sim_no2(self, cat: str) -> float:
+        rng = np.random.default_rng(seed=abs(hash(cat)) % (2**31))
+        return round(float(rng.uniform(18, 55) if cat == "industrial" else rng.uniform(5, 20)), 1)
+
+    def _sim_so2(self, cat: str) -> float:
+        rng = np.random.default_rng(seed=abs(hash(cat)) % (2**31))
+        return round(float(rng.uniform(5, 30) if cat == "industrial" else rng.uniform(1, 8)), 1)
+
+    def _sim_co(self, cat: str) -> float:
+        rng = np.random.default_rng(seed=abs(hash(cat)) % (2**31))
+        return round(float(rng.uniform(400, 900) if cat == "industrial" else rng.uniform(200, 500)), 1)
+
+    def _sim_o3(self) -> float:
+        rng = np.random.default_rng(seed=42)
+        return round(float(rng.uniform(40, 90)), 1)
+
+    # ── ASYNC FETCH WRAPPER ───────────────────────────────────────
+
+    async def _fetch_weather_async(self, client: httpx.AsyncClient, municipio: str) -> WeatherData:
+        cached = self._cache_get(municipio)
+        if cached:
+            return cached
+
+        meta = MUNICIPIOS_AMM[municipio]
+        lat, lon = meta["lat"], meta["lon"]
+
+        if self._use_real:
+            try:
+                data = await self._fetch_real(municipio, lat, lon, meta["cat"])
+            except Exception:
+                data = self._simulate(municipio, lat, lon, meta["cat"])
+        else:
+            data = self._simulate(municipio, lat, lon, meta["cat"])
+
+        self._cache_set(municipio, data)
+        return data
+
+    # ── API PÚBLICA ───────────────────────────────────────────────
 
     def get_municipio(self, municipio: str) -> WeatherData:
-        """Obtiene datos de un municipio (síncrono, con caché)."""
         if municipio not in MUNICIPIOS_AMM:
-            raise ValueError(f"Municipio '{municipio}' no encontrado. "
-                             f"Disponibles: {list(MUNICIPIOS_AMM.keys())}")
+            raise ValueError(f"Municipio '{municipio}' no encontrado.")
         return asyncio.run(self._get_single(municipio))
 
     async def _get_single(self, municipio: str) -> WeatherData:
@@ -294,34 +349,33 @@ class WeatherClient:
             return await self._fetch_weather_async(client, municipio)
 
     def get_all_municipios(self) -> dict[str, WeatherData]:
-        """
-        Obtiene datos de todos los municipios del AMM en paralelo.
-        Optimizado: una sola sesión HTTP, todas las peticiones simultáneas.
-        """
         return asyncio.run(self._get_all_async())
 
     async def _get_all_async(self) -> dict[str, WeatherData]:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            tasks = [
-                self._fetch_weather_async(client, muni)
-                for muni in MUNICIPIOS_AMM
-            ]
+            tasks = [self._fetch_weather_async(client, m) for m in MUNICIPIOS_AMM]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         output = {}
         for muni, result in zip(MUNICIPIOS_AMM.keys(), results):
             if isinstance(result, Exception):
-                # Fallback a simulación si falla la petición
-                output[muni] = self._simulate(
-                    muni,
-                    MUNICIPIOS_AMM[muni]["lat"],
-                    MUNICIPIOS_AMM[muni]["lon"],
-                    MUNICIPIOS_AMM[muni]["cat"]
-                )
+                meta = MUNICIPIOS_AMM[muni]
+                output[muni] = self._simulate(muni, meta["lat"], meta["lon"], meta["cat"])
             else:
                 output[muni] = result
-
         return output
 
     def get_municipios_list(self) -> list[str]:
         return list(MUNICIPIOS_AMM.keys())
+
+    def close(self):
+        if self._tomorrow:
+            self._tomorrow.close()
+        if self._sima:
+            self._sima.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()

@@ -1,0 +1,136 @@
+MANUAL DE USUARIO
+Sistema de Pronostico Climatico AMM
+
+---
+
+1. QUE ES ESTA APLICACION
+
+Es una herramienta web para consultar el estado del clima y la calidad del aire en el Area Metropolitana de Monterrey. Muestra datos actuales, pronosticos y simulaciones de contaminacion.
+
+La aplicacion se ejecuta en el navegador. No requiere instalacion por parte del usuario.
+
+---
+
+2. COMO ENTRAR
+
+Abre el navegador y ve a la direccion que te indique el administrador (por ejemplo: http://localhost:8501).
+
+La pagina carga sola. En la parte superior izquierda aparece el nombre del sistema y la hora de la ultima actualizacion.
+
+---
+
+3. PANTALLA PRINCIPAL
+
+La pantalla tiene cuatro pestanas y una barra lateral izquierda.
+
+3.1 Barra lateral
+
+Muestra:
+  - Estacion: selecciona la estacion de monitoreo (NORTE2, NORESTE o NTE2). Esto cambia los datos de contaminacion que se muestran.
+  - Municipio: selecciona el municipio del AMM. Esto cambia los datos de clima y pronostico.
+  - Parametros del modelo: controles para las pruebas estadisticas (simulaciones, semilla, nivel de significancia).
+  - Boton "Actualizar datos": fuerza una nueva consulta a las fuentes. Sin presionarlo, los datos se refrescan automaticamente cada 10 minutos.
+
+3.2 Pestanas
+
+Pestana 1: Condiciones actuales
+  - Seis cajas superiores con numeros clave: humedad, temperatura, presion, viento, nubosidad, AQI.
+  - Grafica de humedad y presion de las ultimas 24 horas.
+  - Grafica de radar con las cinco variables principales.
+  - Grafica de contaminantes del aire. Por defecto muestra el porcentaje del limite normativo. Si activas "Ver valores absolutos", cambia a la concentracion real con escala logaritmica.
+  - Pronostico de 3 dias: probabilidad de lluvia y temperaturas maximas y minimas.
+  - Pronostico post-lluvia: si se detecta lluvia en las proximas 48 horas, muestra la temperatura esperada antes y despues del evento.
+
+Pestana 2: Pruebas estadisticas
+  - Resultado del diagnostico: probabilidad de lluvia y confianza.
+  - Cuatro cajas con los resultados de GCL, KS, Series y Promedios.
+  - Graficas: distribucion KS, convergencia Monte Carlo, prueba de series, prueba de promedios.
+  - Panel resumen 4-en-1.
+  - Tabla con los primeros 20 numeros generados por el GCL.
+
+Pestana 3: Comparativa AMM
+  - Selector de variable a comparar entre todos los municipios.
+  - Grafica de barras o heatmap.
+  - Tabla resumen con datos de todos los municipios.
+  - Diagnostico estadistico aplicado a cada municipio.
+
+Pestana 4: Simulacion PM2.5
+  - Controles: emision base, coeficiente de friccion, horizonte de tiempo, ciclo diurno.
+  - Cuatro cajas con indicadores: emision, viento, concentracion final proyectada, tiempo al tipping point.
+  - Grafica de trayectoria de PM2.5 con linea de umbral normativo (35 µg/m³).
+  - Analisis de sensibilidad: siete escenarios variando la velocidad del viento.
+  - Simulacion con lluvia: ajusta inicio, duracion e intensidad de una lluvia para ver su efecto en la concentracion.
+
+---
+
+4. COMO INTERPRETAR LOS COLORES
+
+Grafica de contaminantes:
+  - Verde: concentracion por debajo del 70% del limite normativo. Condicion aceptable.
+  - Amarillo: entre 70% y 100% del limite. Precaucion.
+  - Rojo: sobre el limite normativo. Posible contingencia.
+
+Grafica de simulacion PM2.5:
+  - Zona verde (abajo de 24.5): segura.
+  - Zona amarilla (24.5 a 35): precaucion.
+  - Zona roja (sobre 35): contingencia. El punto donde la linea cruza el umbral se llama "Tipping Point".
+
+Pronostico post-lluvia:
+  - Flecha hacia arriba: temperatura antes de la lluvia.
+  - Flecha hacia abajo: temperatura despues de la lluvia.
+  - Si la diferencia es de 5 °C o mas, se activa la alerta de "frio post-tormenta".
+
+---
+
+5. QUE HACER SI LOS DATOS NO CARGAN
+
+- Revisa que tengas conexion a Internet.
+- Presiona el boton "Actualizar datos" en la barra lateral.
+- Si persiste, verifica el color del indicador junto al nombre del municipio:
+    - Verde: datos en vivo.
+    - Amarillo: datos simulados (fallo temporal de la fuente).
+    - Naranja: combinacion de datos reales y simulados.
+- Los datos simulados sirven para seguir usando la aplicacion, pero no reflejan condiciones reales.
+
+---
+
+6. PREGUNTAS FRECUENTES
+
+P: Por que el PM2.5 es el mismo en todos los municipios?
+R: La fuente de contaminacion es una sola estacion de monitoreo. Los datos de clima (temperatura, viento) si cambian por municipio, pero la contaminacion se toma del punto de medicion seleccionado.
+
+P: Que significa "Tipping Point"?
+R: Es el momento proyectado en que la concentracion de PM2.5 alcanzaria los 35 µg/m³, valor limite de la norma mexicana NOM-025. Si la grafica nunca cruza la linea roja, no hay tipping point.
+
+P: Que diferencia hay entre "% del limite" y "valores absolutos"?
+R: "% del limite" normaliza todos los contaminantes para compararlos en la misma escala. "Valores absolutos" muestra la concentracion real de cada uno, pero usa escala logaritmica porque CO puede ser miles de veces mayor que PM2.5.
+
+P: Para que sirve cambiar la semilla GCL?
+R: La semilla controla la secuencia de numeros aleatorios que usa el modelo estadistico. Cambiarla genera una secuencia diferente, util para verificar la robustez del modelo.
+
+P: Puedo usar la aplicacion sin Internet?
+R: No. Necesita conexion para consultar las fuentes de datos. Sin Internet, la aplicacion puede mostrar datos simulados pero no reales.
+
+---
+
+7. GLOSARIO
+
+- PM2.5: Particulas suspendidas en el aire con diametro menor a 2.5 micrometros.
+- PM10: Particulas con diametro menor a 10 micrometros.
+- AQI: Indice de calidad del aire. De 1 (bueno) a 5 (muy malo).
+- GCL: Generador Congruencial Lineal. Metodo para producir numeros pseudoaleatorios.
+- KS: Prueba de Kolmogorov-Smirnov. Verifica si los numeros siguen una distribucion uniforme.
+- Monte Carlo: Metodo de simulacion que usa numeros aleatorios para estimar probabilidades.
+- Tipping Point: Punto de inflexion donde un sistema cambia de estado (en este caso, de condicion normal a contingencia).
+- EDO: Ecuacion Diferencial Ordinaria. Ecuacion que relaciona una funcion con su tasa de cambio.
+
+---
+
+8. CONTACTO Y SOPORTE
+
+Este es un proyecto academico de la UANL FIME.
+Para reportes tecnicos, dirigirse al desarrollador o al responsable del proyecto.
+
+---
+
+Fin del manual.

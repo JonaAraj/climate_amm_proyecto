@@ -1,0 +1,334 @@
+. Introducción
+El Área Metropolitana de Monterrey (AMM) enfrenta de manera recurrente episodios de mala calidad del
+aire, catalogados oficialmente como contingencias ambientales atmosféricas. Estos eventos se producen
+cuando la concentración de contaminantes —en especial el Material Particulado de diámetro aerodinámico
+menor a 2.5 micrómetros (PM2.5)— supera los límites establecidos por la norma oficial mexicana
+NOM-025-SSA1-2014, representando un riesgo directo para la salud pública.
+A pesar de contar con una red de monitoreo gubernamental (SIMA – Sistema Integral de Monitoreo
+Ambiental de Nuevo León), los sistemas actuales tienen una limitación estructural: son esencialmente
+reactivos. Reportan condiciones existentes pero carecen de capacidad predictiva basada en la dinámica
+del sistema atmosférico local. Esto impide tanto a autoridades como a empresas tomar decisiones
+anticipadas.
+El presente proyecto propone un modelo de simulación dinámica capaz de predecir el comportamiento de
+la concentración de PM2.5 en función de variables meteorológicas obtenidas en tiempo real, integrando
+datos provenientes de sensores privados y una interfaz de programación de aplicaciones (API) pública. El
+modelo se fundamenta en la Metodología de Dinámica de Sistemas de Forrester y se implementa
+computacionalmente en Python.
+2. Problemática y Justificación
+2.1 Contexto Ambiental del AMM
+La cuenca atmosférica de Monterrey es particularmente vulnerable a la acumulación de contaminantes por
+factores geográficos y climáticos combinados: la Sierra Madre Oriental actúa como barrera natural que
+limita la dispersión de partículas hacia el poniente, mientras que las frecuentes inversiones térmicas
+—especialmente en los meses de enero a abril— generan condiciones de estancamiento donde la
+concentración de PM2.5 puede incrementarse de forma no lineal en pocas horas.
+Adicionalmente, la actividad industrial de alto impacto (plantas de acero, cementeras, petroquímicas y
+parque vehicular pesado) genera emisiones antropogénicas continuas cuya dispersión depende
+críticamente de la velocidad y dirección del viento. Un cambio súbito en las condiciones de viento puede
+transformar un día dentro de norma en un episodio de contingencia en un lapso de 2 a 4 horas.
+2.2 Limitaciones de los Sistemas Actuales
+Sistema
+Capacidad
+Limitación
+SIMA (SEMARNAT/NL)
+Monitoreo en tiempo real de AQI y PM2.5
+Solo reporta condiciones actuales. Sin simulación ni predicción.
+AERMOD / CALPUFF
+Modelos de dispersión gaussiana
+Requieren licencia, operadores especializados y no conectan con APIs en tiempo real.
+Modelos académicos cerrados Simulaciones offline
+Sistemas comerciales internacionales
+Sin integración de datos reales; parámetros estáticos no ajustables.
+Predicción avanzada (AirNow, Copernicus)
+No calibrados para topografía local del AMM; sin uso de datos de sensores privados.
+Tabla 1. Comparativa de sistemas de monitoreo y modelado atmosférico existentes.
+Página 2
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+2.3 Vacío Tecnológico que Justifica el Proyecto
+El vacío identificado es específico: no existe actualmente en el AMM una herramienta de simulación
+dinámica que combine (a) un modelo de ecuaciones diferenciales calibrado para la cuenca local, (b) datos
+meteorológicos en tiempo real vía API, y (c) datos de sensores privados georreferenciados en puntos
+estratégicos. Esta combinación permite generar predicciones accionables para empresas del sector
+industrial, algo que ninguno de los sistemas listados ofrece de forma integrada.
+Hipótesis central: Un incremento del 10% en la velocidad del viento produce una reducción no lineal en
+la concentración de PM2.5, efecto que solo puede cuantificarse correctamente mediante un modelo de
+dinámica de sistemas con retroalimentación continua, no mediante modelos estáticos o promedios
+históricos.
+3. Origen del Proyecto – Caso de Uso Real
+3.1 El Problema Concreto
+El proyecto surge de una necesidad operativa real identificada en Santa Fe Multigas, una empresa
+distribuidora de gas LP con operaciones en el AMM. El propietario de la empresa, el Sr. Marlon Garza
+Garza, cuenta desde hace aproximadamente dos años con acceso contratado a una estación de monitoreo
+ambiental instalada en un punto elevado de la Sierra al poniente de Monterrey. Dicha estación registra,
+entre otras variables, velocidad y dirección del viento, temperatura, humedad relativa y concentración de
+material particulado.
+El acceso a estos sensores fue adquirido originalmente como parte de los requisitos de monitoreo
+ambiental que establece la Agencia de Seguridad, Energía y Ambiente (ASEA) para empresas del sector
+de hidrocarburos. Sin embargo, la información generada por la estación no contaba con ninguna
+herramienta de análisis o visualización: los datos llegaban en formato crudo a un servidor local sin ser
+procesados ni interpretados.
+3.2 El Punto de Contacto
+El equipo de trabajo tomó conocimiento de esta situación a través de contacto directo con el Sr. Garza
+Garza, quien manifestó interés en encontrar utilidad práctica a la información que sus sensores generaban
+continuamente. Al identificar la coincidencia entre los datos disponibles y las necesidades del proyecto
+académico de Modelado y Simulación de Sistemas Dinámicos, se estableció un acuerdo informal de
+colaboración: el propietario proporcionaría acceso a los datos históricos y en tiempo real de su estación, y
+el equipo desarrollaría un simulador que le permitiera interpretar esos datos en términos de riesgo de
+contingencia ambiental.
+3.3 Necesidad del Cliente – ¿Para Qué lo Necesita?
+Situación
+Sin el simulador
+Con el simulador
+Viento disminuye a las 3 PM La empresa se entera cuando ya existe contingencia oficial y debe parar operaciones.
+El modelo predice el incremento de PM2.5 horas antes; la empresa reduce emisiones voluntariamente.
+Página 3
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+Evaluación de aumento de producción
+Decisión basada en intuición o experiencia; riesgo de superar umbrales normativos.
+Simulación del escenario proyectado con parámetros reales de viento del día.
+Auditoría ambiental ASEA
+Solo datos crudos del sensor sin interpretación sistémica.
+Registro histórico modelado que evidencia gestión proactiva y cumplimiento normativo.
+Contingencia imprevista
+Reacción tardía; posibles multas o paro forzado.
+Detección temprana del 'Tipping Point'; margen de acción de 2-4 horas.
+Tabla 2. Matriz de valor del simulador para Santa Fe Multigas.
+3.4 Lo Nuevo del Proyecto para el Cliente
+El valor diferencial no está en el monitoreo en sí —que ya existe mediante el SIMA— sino en la integración
+de datos propios del cliente con un modelo dinámico capaz de simular escenarios futuros. Santa Fe
+Multigas pasa de tener datos que no usa, a tener una herramienta de toma de decisiones operativas en
+tiempo real. Ningún sistema público ni comercial disponible actualmente en México ofrece esto para
+empresas de tamaño mediano del sector hidrocarburos en el AMM.
+Página 4
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+4. Marco Teórico
+4.1 Material Particulado PM2.5
+El término PM2.5 designa partículas sólidas o líquidas suspendidas en la atmósfera con un diámetro
+aerodinámico menor o igual a 2.5 micrómetros. Debido a su tamaño reducido, estas partículas pueden
+penetrar el sistema respiratorio hasta los alvéolos pulmonares y, en exposición prolongada, ingresar al
+torrente sanguíneo. La Organización Mundial de la Salud (OMS) clasifica al PM2.5 como el contaminante
+criterio con mayor impacto en mortalidad prematura a nivel global.
+En términos físicos, el comportamiento del PM2.5 en la atmósfera está gobernado por tres procesos
+principales: emisión (fuentes fijas y móviles), transporte (advección por viento) y remoción (deposición
+seca, precipitación y reacciones fotoquímicas). La tasa neta de acumulación en un volumen de control
+atmosférico depende del balance entre los flujos de entrada y salida, cuya interacción dinámica es no
+lineal.
+4.2 Cuenca Atmosférica y Concepto de Tipping Point
+Una cuenca atmosférica es una región geográfica delimitada por características topográficas que
+condicionan los patrones de flujo de aire. En el caso del AMM, la cuenca está definida por la Sierra Madre
+Oriental al poniente y la llanura costera al oriente, formando un recipiente natural donde los contaminantes
+se concentran bajo condiciones de viento débil.
+El concepto de Tipping Point o punto crítico de saturación, aplicado a este contexto, refiere al umbral de
+concentración de PM2.5 a partir del cual el sistema atmosférico local deja de poder dispersar los
+contaminantes de forma natural, generando una retroalimentación positiva donde la acumulación se
+acelera. En el modelo propuesto, este punto es identificable como el momento donde dM/dt > 0 de forma
+sostenida a pesar de tasas de emisión constantes.
+4.3 Dinámica de Sistemas – Metodología de Forrester
+La Dinámica de Sistemas es una metodología de modelado desarrollada por Jay W. Forrester en el MIT
+durante la década de 1960. Su fundamento epistemológico es que el comportamiento de sistemas
+complejos es resultado de las estructuras de retroalimentación internas, no de agentes externos aislados.
+El formalismo matemático se estructura mediante tres elementos:
+• ("Stocks (niveles de acumulación): variables de estado que representan la acumulación de una
+cantidad en el tiempo. En este modelo, M(t) es el stock de PM2.5 en la tropósfera local.",)
+• ('Flujos: tasas de cambio que modifican los stocks. El flujo de entrada E(t) representa las emisiones
+industriales y vehiculares; el flujo de salida D(t) representa la dispersión atmosférica en función del
+viento.',)
+• ('Retroalimentación: el flujo de salida D(t) depende del propio valor del stock M(t), creando un lazo
+de retroalimentación negativa que tiende a estabilizar el sistema bajo condiciones normales de
+viento.',)
+Este paradigma es superior a los modelos estadísticos para este caso de uso porque captura
+explícitamente la causalidad dinámica entre variables: el viento no solo correlaciona con la calidad del aire,
+Página 5
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+sino que es el mecanismo causal del flujo de salida en el modelo.
+4.4 Dispersión Gaussiana vs. Dinámica de Sistemas
+Los modelos de dispersión gaussiana (como AERMOD) calculan la concentración de contaminantes en un
+punto específico como función de la distancia a la fuente emisora, usando una distribución de tipo campana
+sobre los ejes horizontal y vertical. Son adecuados para estudios de impacto puntual, pero presentan
+limitaciones para simular el comportamiento agregado de una cuenca atmosférica completa, ya que no
+modelan la acumulación temporal ni los efectos de retroalimentación.
+El modelo de Dinámica de Sistemas propuesto opera a escala de cuenca, tratando el volumen atmosférico
+local como un sistema de mezcla completa (well-mixed box model) donde la variable de estado M(t)
+representa la masa total de partículas suspendidas. Esto lo hace complementario, no sustituto, de los
+modelos gaussianos: mientras aquellos resuelven la distribución espacial de la concentración, este
+resuelve la evolución temporal del inventario total del contaminante.
+4.5 Integración de APIs REST en Tiempo Real
+Una API (Application Programming Interface) de tipo REST (Representational State Transfer) es una
+interfaz de comunicación entre sistemas de software que opera sobre el protocolo HTTP. En el contexto de
+este proyecto, se consume la API de OpenWeatherMap, que proporciona datos meteorológicos
+actualizados en formato JSON, incluyendo velocidad del viento (m/s), dirección (grados), temperatura (K) y
+humedad relativa (%).
+La integración de esta API como fuente de parámetros del modelo constituye el elemento de innovación
+tecnológica central: los coeficientes del modelo no son constantes calibradas offline, sino que se actualizan
+en cada ciclo de simulación con las condiciones reales del momento. Esto convierte al modelo de un
+simulador académico cerrado en una herramienta de monitoreo dinámico operativo.
+Página 6
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+5. Descripción Técnica del Sistema
+5.1 Ecuación Rectora del Modelo
+El núcleo matemático del simulador es una ecuación diferencial ordinaria de primer orden que describe la
+variación temporal de la concentración de PM2.5 en la cuenca atmosférica local:
+dM/dt = E(t) – [ k · Vapi
+(t) · M(t) ]
+Donde:
+M(t) = Stock de PM2.5 en la cuenca [µg/m³]
+E(t) = Tasa de emisión antropogénica [µg/m³·h]
+k = Coeficiente de fricción atmosférica y topografía local [adimensional]
+Vapi(t) = Velocidad del viento en tiempo real [m/s], obtenida via API
+El término de salida k·V(t)·M(t) modela el proceso de dispersión como proporcional tanto a la velocidad del
+viento como al nivel de contaminante acumulado. Esta formulación produce la no linealidad característica
+del sistema: al aumentar M(t), el efecto limpiador del viento es más intenso, generando el lazo de
+retroalimentación negativa descrito en el marco teórico. La ecuación es resuelta numéricamente mediante
+el método de Runge-Kutta de orden 4-5 (solve_ivp de SciPy), con paso de tiempo adaptativo.
+5.2 Definición de Variables del Modelo
+Tipo
+Símbolo
+Descripción
+Stock (variable de estado) M(t)
+Flujo de entrada
+E(t)
+Acumulación de PM2.5 en la tropósfera local [µg/m³]
+Fuente
+Calculada por integración numérica
+Tasa de emisión industrial/vehicular. Modelada con componente estocástica según horario.
+Parámetro calibrado / sensor privado
+Flujo de salida
+Parámetro de topografía
+D(t)
+k
+Tasa de dispersión atmosférica. D(t) = k · Vapi(t) · M(t) API OpenWeatherMap
+Coeficiente que representa la resistencia topográfica de la cuenca al flujo de viento.
+Calibración con datos históricos SIMA
+Viento en tiempo real
+Punto crítico
+Vapi(t)
+M*
+Velocidad escalar del viento en m/s, actualizada en cada paso de simulación.
+API OpenWeatherMap / sensor privado
+Umbral de saturación definido por NOM-025-SSA1 (35 µg/m³ promedio 24h).
+Norma Oficial Mexicana
+Tabla 3. Variables y parámetros del modelo dinámico.
+5.3 Arquitectura del Software
+El sistema se estructura en tres módulos funcionales desacoplados, lo que permite sustituir cualquier
+componente sin afectar los demás:
+• ('Módulo de Ingesta de Datos (Data Ingestion): Realiza llamadas HTTP GET al endpoint de la
+API de OpenWeatherMap en intervalos configurables. Parsea la respuesta JSON y extrae los campos
+relevantes (wind.speed, main.temp, main.humidity). Diseñado para incorporar fuentes adicionales,
+como los datos del sensor privado de Santa Fe Multigas.',)
+Página 7
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+• ('Módulo de Simulación (Solver): Implementa la resolución numérica de la EDO mediante
+scipy.integrate.solve_ivp con método RK45. Recibe el vector de condiciones meteorológicas actuales y
+devuelve la trayectoria temporal de M(t) para el horizonte de simulación configurado.',)
+• ('Módulo de Visualización (Dashboard): Genera gráficas interactivas en tiempo real con
+Matplotlib, mostrando la evolución de M(t), la línea de umbral crítico M* y la ventana temporal estimada
+al Tipping Point.',)
+5.4 Stack Tecnológico
+Componente
+Tecnología
+Justificación Técnica
+Lenguaje base
+Solver de EDOs
+Python 3.10
+Ecosistema científico maduro; soporte nativo para cómputo numérico y consumo de APIs.
+SciPy — scipy.integrate.solve_ivp
+Implementación de Runge-Kutta adaptativo (RK45); control automático de error numérico.
+Manejo de datos
+Conectividad externa
+Pandas
+Estructuras de series de tiempo; alineación de índices temporales entre fuentes de datos.
+requests + API REST JSON Protocolo HTTP estándar; respuesta en formato JSON nativo de Python (json.loads).
+Visualización
+Matplotlib / Plotly
+Generación de ruido estocástico
+NumPy (random)
+Gráficas interactivas actualizables en tiempo real; exportación a formatos de reporte.
+Simulación de variabilidad horaria en E(t) mediante distribución gaussiana truncada.
+Tabla 4. Stack tecnológico y justificación de selección de herramientas.
+Página 8
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+6. Objetivos del Proyecto
+6.1 Objetivo General
+Desarrollar un simulador de dinámica de sistemas capaz de modelar en tiempo real la acumulación y
+dispersión de PM2.5 en la cuenca atmosférica del AMM, integrando datos meteorológicos vía API y datos
+de sensores privados, con aplicación directa como herramienta de apoyo a la gestión ambiental operativa.
+6.2 Objetivos Específicos
+1. Formular y validar matemáticamente la ecuación diferencial que gobierna la dinámica de
+acumulación y dispersión de PM2.5 en la cuenca local.
+2. Implementar el módulo de ingesta de datos en tiempo real mediante consumo de la API REST de
+OpenWeatherMap e integración con la fuente de datos del sensor privado.
+3. Resolver numéricamente la EDO utilizando el método de Runge-Kutta de orden 4-5 con control de
+error adaptativo (scipy.integrate.solve_ivp).
+4. Validar el modelo comparando las trayectorias simuladas con datos históricos del SIMA para
+episodios de contingencia documentados en el AMM.
+5. Determinar cuantitativamente el impacto de un incremento del 10% en la velocidad del viento
+sobre el tiempo estimado al Tipping Point, demostrando la no linealidad del sistema.
+6. Desarrollar una interfaz de visualización dinámica que permita al usuario final (Santa Fe Multigas)
+interpretar el estado y proyección del sistema sin conocimiento técnico del modelo.
+7. Resultados Esperados
+Al término del proyecto se espera contar con los siguientes entregables y resultados verificables:
+Entregable
+Descripción
+Simulador funcional en
+Python
+Validación cuantitativa
+Aplicación ejecutable que consume datos de la API, resuelve la EDO y
+genera gráficas en tiempo real sin intervención del usuario.
+Comparativa entre la trayectoria simulada y datos reales del SIMA
+para al menos dos episodios históricos de contingencia en el AMM,
+con error relativo documentado.
+Análisis de sensibilidad
+Detección del Tipping
+Point
+Conjunto de simulaciones paramétrica que documenta la respuesta
+del sistema ante variaciones del ±10%, ±25% y ±50% en la velocidad
+del viento y la tasa de emisión, respectivamente.
+El sistema identifica y notifica el tiempo estimado al cruce del umbral
+M* definido por NOM-025-SSA1 bajo las condiciones meteorológicas
+actuales.
+Página 9
+UANL · FIME · Modelado y Simulación de Sistemas Dinámicos
+Enero – Junio 2026
+Dashboard de
+visualización
+Interfaz gráfica que muestra: (a) concentración actual vs. histórico de
+24h, (b) proyección a 4 horas, (c) indicador de riesgo
+(verde/amarillo/rojo) y (d) tiempo estimado al Tipping Point.
+Documentación técnica Reporte final que incluye derivación del modelo, justificación de
+parámetros, resultados de validación y manual de uso para el cliente.
+Tabla 5. Entregables esperados al término del proyecto.
+8. Conclusión
+El proyecto presentado responde a una necesidad técnica y operativa real, identificada en el contexto de
+las contingencias ambientales recurrentes del AMM y materializada a través del caso de uso de Santa Fe
+Multigas. Su innovación no reside en el monitoreo de calidad del aire —función que el SIMA ya cumple—
+sino en la integración de un modelo de dinámica de sistemas con datos en tiempo real para generar
+capacidad predictiva accionable.
+Desde el punto de vista académico, el proyecto cubre de forma integral los contenidos de la materia:
+modelado matemático de sistemas dinámicos, resolución numérica de ecuaciones diferenciales, análisis de
+estabilidad y sensibilidad, e implementación computacional. Desde el punto de vista aplicado, demuestra
+que las herramientas de la ingeniería de sistemas son transferibles a problemas reales de gestión
+ambiental industrial.
+El carácter abierto de la arquitectura —basada en APIs públicas y datos de sensores privados existentes—
+garantiza que el simulador pueda ser adoptado por el cliente sin inversión adicional en infraestructura,
+maximizando el impacto práctico del desarrollo.
+Referencias
+[1] Forrester, J. W. (1961). Industrial Dynamics. MIT Press.
+[2] Sterman, J. D. (2000). Business Dynamics: Systems Thinking and Modeling for a Complex World. McGraw-Hill.
+[3] Secretaría de Salud. (2014). NOM-025-SSA1-2014: Valores límite permisibles para la concentración de partículas
+suspendidas PM10 y PM2.5 en el aire ambiente. DOF.
+[4] SEMARNAT / SIMA Nuevo León. (2024). Inventario de Emisiones y Datos Históricos de Calidad del Aire – Área
+Metropolitana de Monterrey. Gobierno de Nuevo León.
+[5] Organización Mundial de la Salud. (2021). WHO Global Air Quality Guidelines: Particulate Matter, Ozone, Nitrogen
+Dioxide, Sulfur Dioxide and Carbon Monoxide. WHO Press.
+[6] Virtanen, P., et al. (2020). SciPy 1.0: Fundamental Algorithms for Scientific Computing in Python. Nature Methods,
+17, 261–272.
+[7] OpenWeatherMap. (2024). Current Weather Data API – Technical Documentation. Recuperado de
+https://openweathermap.org/api
+[8] Agencia de Seguridad, Energía y Ambiente (ASEA). (2022). Guía para el Monitoreo Ambiental en Instalaciones del
+Sector Hidrocarburos. ASEA.
