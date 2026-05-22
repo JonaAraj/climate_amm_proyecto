@@ -139,3 +139,6 @@ class MotorEstadisticoAMM:
             runs_passed=runs_ok,
             all_tests_passed=all_passed
         )
+
+StatisticalEngine = MotorEstadisticoAMM
+StatTestSuite = SuiteResultadosLimpios
