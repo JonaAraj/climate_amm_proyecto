@@ -383,14 +383,15 @@ if data:
             )
  
         fig_traj.update_layout(
-            xaxis_title="Tiempo (horas)",
-            yaxis_title="Concentración PM2.5 (µg/m³)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            height=420,
-            margin=dict(l=10, r=10, t=40, b=10),
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)"
-        )
+        xaxis=dict(title="Tiempo (horas)", range=[0, horizonte_h]),
+        yaxis_title="Concentración PM2.5 (µg/m³)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=420,
+        margin=dict(l=10, r=10, t=40, b=10),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)"
+    )   
+    
         st.plotly_chart(fig_traj, use_container_width=True)
  
         # ── ANÁLISIS DE SENSIBILIDAD ──────────────────────────────────
